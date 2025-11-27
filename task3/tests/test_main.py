@@ -1,7 +1,7 @@
 import json
 import pytest
 import numpy as np
-from main import flatten_ranking, ranking_to_matrix, find_core_and_consistent_ranking
+from task3.task3 import flatten_ranking, ranking_to_matrix, find_core_and_consistent_ranking
 
 
 class TestFlattenRanking:

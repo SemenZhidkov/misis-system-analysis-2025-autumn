@@ -3,7 +3,7 @@
 """
 import json
 import pytest
-from main import find_core_and_consistent_ranking
+from task3.task3 import find_core_and_consistent_ranking
 
 
 class TestIntegrationWithFiles:
