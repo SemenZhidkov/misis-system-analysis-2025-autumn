@@ -1,129 +1,130 @@
-import numpy as np
-
-def parse(s: str) -> dict:
-    if s[0] == '[' and s[-1] == ']':
-        s = s[1:-1].strip()
-    pos_map = {}
-    pos = 0
-    i = 0
-    n = len(s)
-
-    while i < n:
-        if s[i] == '[':
-            j = s.find(']', i)
-            if j == -1:
-                raise ValueError("Нет ']'")
-            content = s[i+1:j]
-            items = [x.strip() for x in content.split(',') if x.strip()]
-            for item in items:
-                pos_map[item] = pos
-            pos += 1
-            i = j + 1
-        elif s[i] == ',' or s[i].isspace():
-            i += 1
-        else:
-            start = i
-            while i < n and s[i] not in ',[':
-                i += 1
-            item = s[start:i].strip()
-            if item:
-                pos_map[item] = pos
-                pos += 1
-    return pos_map
+import json
+import ast
 
 
-def make_matrix(pos_map, items):
-    n = len(items)
-    mat = np.zeros((n, n), bool)
-    for i1 in range(n):
-        pos1 = pos_map[items[i1]]
-        for i2 in range(n):
-            pos2 = pos_map[items[i2]]
-            if pos1 <= pos2:
-                mat[i1][i2] = 1
-    return mat
+def membership_value(points, x):
+    n = len(points)
+    if x <= points[0][0]:
+        return points[0][1]
+    if x >= points[n - 1][0]:
+        return points[n - 1][1]
+    
+    for i in range(n - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        if x1 <= x <= x2:
+            if x2 == x1:
+                return y1
+            return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+    return 0.0
 
 
-def main(str1: str, str2: str):
-    items = [x.strip(',[]') for x in str1.split(',')]
+def fuzzify(temperature_terms, temperature_value):
+    memberships = {}
+    for term in temperature_terms:
+        term_id = term["id"]
+        points = term["points"]
+        memberships[term_id] = membership_value(points, temperature_value)
+    return memberships
 
-    map1 = parse(str1)
-    map2 = parse(str2)
-    mat1 = make_matrix(map1, items)
-    mat2 = make_matrix(map2, items)
 
-    mat1T = mat1.T
-    mat2T = mat2.T
+def normalize_term(term, available_terms):
+    if term in available_terms:
+        return term
+    
+    term_mappings = {
+        'нормально': 'комфортно',
+        'умеренно': 'умеренный',
+        'слабо': 'слабый',
+        'интенсивно': 'интенсивный'
+    }
+    
+    if term in term_mappings and term_mappings[term] in available_terms:
+        return term_mappings[term]
+    
+    term_lower = term.lower()
+    for available in available_terms:
+        if available.lower().startswith(term_lower[:4]) or term_lower[:4] in available.lower():
+            return available
+    
+    return term
 
-    mat12 = mat1 * mat2
-    mat12T = mat1T * mat2T
-    mat_dis = mat12 + mat12T
 
-    bad_pos = list(zip(*np.where(~mat_dis)))
-    pairs_set = {tuple(sorted(p)) for p in bad_pos}
-    contradictions = [(items[i], items[j]) for i, j in pairs_set]
+def apply_rules(rules, temperature_memberships, control_term_ids):
+    activated = {}
+    
+    for rule in rules:
+        temp_term, control_term = rule[0], rule[1]
+        
+        normalized_temp = normalize_term(temp_term, temperature_memberships.keys())
+        normalized_control = normalize_term(control_term, control_term_ids)
+        
+        temp_membership = temperature_memberships.get(normalized_temp, 0.0)
+        
+        if temp_membership > 0 and normalized_control in control_term_ids:
+            if normalized_control not in activated:
+                activated[normalized_control] = temp_membership
+            else:
+                activated[normalized_control] = max(activated[normalized_control], temp_membership)
+    
+    return activated
 
-    matC = mat12.copy()
 
-    for x, y in contradictions:
-        idx1 = items.index(x)
-        idx2 = items.index(y)
-        matC[idx1, idx2] = 1
-        matC[idx2, idx1] = 1
-    matE = matC * matC.T
-    n_items = len(items)
-    matE_star = matE.copy()
-    for k in range(n_items):
-        for i in range(n_items):
-            for j in range(n_items):
-                matE_star[i, j] = matE_star[i, j] or (matE_star[i, k] and matE_star[k, j])
+def defuzzify_centroid(control_terms, activations, step=0.1):
+    if not control_terms:
+        return 0.0
+    
+    x_min = min(term["points"][0][0] for term in control_terms)
+    x_max = max(term["points"][-1][0] for term in control_terms)
+    
+    x_values = []
+    y_values = []
+    
+    x = x_min
+    while x <= x_max:
+        aggregated = 0.0
+        for term in control_terms:
+            term_id = term["id"]
+            if term_id in activations:
+                membership = membership_value(term["points"], x)
+                aggregated = max(aggregated, min(membership, activations[term_id]))
+        
+        x_values.append(x)
+        y_values.append(aggregated)
+        x += step
+    
+    numerator = sum(x_values[i] * y_values[i] for i in range(len(x_values)))
+    denominator = sum(y_values)
+    
+    if denominator == 0:
+        return 0.0
+    
+    return numerator / denominator
 
-    visited = [False] * n_items
-    clusters = []
-    for i in range(n_items):
-        if not visited[i]:
-            cluster = []
-            for j in range(n_items):
-                if matE_star[i, j]:
-                    cluster.append(items[j])
-                    visited[j] = True
-            clusters.append(cluster)
 
-    def compare(c1, c2):
-        for a in c1:
-            idx_a = items.index(a)
-            for b in c2:
-                idx_b = items.index(b)
-                if matC[idx_a, idx_b] == 0:
-                    return False
-        return True
-
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(clusters) - 1):
-            if compare(clusters[i+1], clusters[i]):
-                clusters[i], clusters[i+1] = clusters[i+1], clusters[i]
-                changed = True
-
-    result = []
-    for cluster in clusters:
-        if len(cluster) == 1:
-            result.append(cluster[0])
-        else:
-            result.append(cluster)
-
+def main(temperature_json, control_json, rules_json, temperature_value):
+    try:
+        temp_data = json.loads(temperature_json)
+    except (json.JSONDecodeError, ValueError):
+        temp_data = ast.literal_eval(temperature_json)
+    
+    try:
+        control_data = json.loads(control_json)
+    except (json.JSONDecodeError, ValueError):
+        control_data = ast.literal_eval(control_json)
+    
+    try:
+        rules = json.loads(rules_json)
+    except (json.JSONDecodeError, ValueError):
+        rules = ast.literal_eval(rules_json)
+    
+    temperature_terms = temp_data.get("температура", [])
+    control_terms = control_data.get("температура", [])
+    
+    control_term_ids = [term["id"] for term in control_terms]
+    
+    temperature_memberships = fuzzify(temperature_terms, temperature_value)
+    activations = apply_rules(rules, temperature_memberships, control_term_ids)
+    result = defuzzify_centroid(control_terms, activations)
+    
     return result
-
-
-str1 = '[1,[2,3],4,[5,6,7],8,9,10]'
-str2 = '[[1,2],[3,4,5],6,7,9,[8,10]]'
-print(main(str1, str2))
-
-str3 = "[x1,[x2,x3],x4,[x5,x6,x7],x8,x9,x10]"
-str4 = "[x3,[x1,x4],x2,x6,[x5,x7,x8],[x9,x10]]"
-# print(main(str3, str4))
-
-str5 = '[T,[K,M],D,Z]'
-str6 = '[[T,K],M,Z,D]'
-# print(main(str5, str6))
